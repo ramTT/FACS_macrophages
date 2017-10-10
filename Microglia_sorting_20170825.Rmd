@@ -1,0 +1,204 @@
+---
+title: "Microglia_sorting"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r  echo=F, message=F, warning=F, error=F}
+#0.INSTALLING AND CALLING PACKAGES
+# install.packages("data.table")
+# install.packages("cowplot")
+# install.packages("RColorBrewer")
+
+library(data.table)
+library(cowplot)
+library(RColorBrewer)
+library(knitr)
+library(gridExtra)
+library(grid)
+
+rm(list=ls())
+
+source("/home/ramhak/Dropbox/PHD/PAPER I/R_v2/Function_directory/RTqPCR_data_output_adjuster.R")
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+#Importing data
+DT <- fread("microglia_sort_data.csv")
+#Adjusting numeric columns 
+numeric_columns <- c("Microglia.Percent.Gated", "Monocytes.Percent.Gated")
+DT[,numeric_columns] <- DT[,lapply(.SD, function(column){as.numeric(gsub(",",".",column))}), .SDcols = numeric_columns]
+#Defining group as factor
+factor_variables <- c("RH.index")
+DT[, factor_variables] <- DT[,lapply(.SD, factor), .SDcols=factor_variables]
+#Renaming columns
+names(DT) <- c(names(DT[,1:4]), c("Microglia", "Monocytes"))
+#Creating a long version for statistical anaysis and plotting 
+DT_long <- melt.data.table(DT, measure.vars = c("Microglia", "Monocytes"), variable.name = "cell.type", value.name = "Percentage")
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+#Plotting bar chart of number of percentage of microglia and monocytes
+DT_summary <- DT_long[,.(Mean=mean(Percentage, na.rm=T), SD=sd(Percentage, na.rm=T), N=.N), by=c("Group", "cell.type")][,SEMx1.96:=qnorm(0.975)*SD/sqrt(N)][,`:=`(CI.Lower = ifelse((Mean-SEMx1.96)<0,0,Mean-SEMx1.96), CI.Upper=Mean+SEMx1.96)]
+
+monocyte_microglia_ratio_plot <- ggplot(DT_summary, aes(x=Group, y=Mean, alpha=cell.type, fill=Group))+
+  geom_bar(stat="identity", position = "dodge", width=0.5)+  
+  geom_errorbar(aes(ymin=CI.Lower, ymax=CI.Upper), position = position_dodge(width=0.5), width=0.25, size=2, show.legend = F)+
+  geom_point(position = position_dodge(width=0.5), shape=15, size=4, show.legend = F)+
+  geom_point(DT_long, mapping=aes(x=Group, y=Percentage), position = position_dodge(width=0.5), show.legend = F)+
+  
+  theme(legend.position = "none", legend.title = element_blank(), legend.justification = "center", axis.title.x = element_blank(), axis.ticks.x = element_blank(), axis.text.x = element_blank(), axis.title.y = element_text(face="bold", size=22))+
+  ylab("Percent (%) of total")+
+  
+  scale_fill_manual(values=brewer.pal(11,"RdBu")[c(1,2,10,11)], labels= c("Allogenic IDmBMSC (n=3)", "Syngeneic IDmBMSC (n=3)", "Injury Control (n=3)", "No Injury (n=3)"))+
+  scale_alpha_manual(values=c(1,0.6), labels=c("Macrophages", "Monocytes"))+
+  scale_y_continuous(breaks=seq(0,100,10),limits = c(0,100))
+
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+#Table of ratio
+ratio_table <- DT[,.(Microglia.Mean=mean(Microglia, na.rm=T), Monocytes.Mean=mean(Monocytes, na.rm=T)), by="Group"][,Monocyte.Microglia.Ratio:=round(Monocytes.Mean/Microglia.Mean,3)][order(Group)]
+ratio_table <- transpose(ratio_table[,c("Group", "Monocyte.Microglia.Ratio")])[2]
+names(ratio_table) <- c("Allogenic", "Syngeneic", "Injury", "No-injury")
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+############################################## M1/M2 in isolated macrophages & monocytes ########################################
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+#1. Importing data 
+DT_m1m2 <-  fread("isolated_macrophages_microglia_gene_study.csv")
+#2. Removing unnecessary columns
+DT_m1m2 <- DT_m1m2[,.(Target, Sample, `Mean Cq`, `Normalized Expression`)]
+#3. Converting numeric columns to relevant type 
+adjust_columns <- c("Mean Cq", "Normalized Expression")
+DT_m1m2[, adjust_columns] <- suppressWarnings(DT_m1m2[,lapply(.SD, numeric_adjust), .SDcols = adjust_columns])
+#4. Removing reference genes
+DT_m1m2 <- DT_m1m2[!(Target %in% c("Act_B_1", "GAPDH"))]
+#5. Separating RH.index from cell type
+DT_m1m2 <- DT_m1m2[,`:=`(RH.index=substr(Sample, 1,3), cell.type=substr(Sample, 4, nchar(Sample)))][,!"Sample"]
+#6. Changing column names
+names(DT_m1m2) <- c("target", "mean.cq", "normalized.expression", "RH.index", "cell.type")
+#7. Changing variables types
+factor_variables_m1m2 <- c("target", "RH.index", "cell.type")
+DT_m1m2[, factor_variables_m1m2] <- DT_m1m2[,lapply(.SD, factor), .SDcols = factor_variables_m1m2]
+#8. Creating a sample key
+sample_key <- DT[,.(RH.index, Group, Force, Displacement)]
+#9. Merging qPCR data with the sample key
+DT_m1m2 <- merge(DT_m1m2, sample_key, by="RH.index")
+#10. Adjusting for displacement
+DT_m1m2 <- DT_m1m2[,normalized.expression.adjusted := ifelse(!is.na(Displacement),normalized.expression/Displacement, normalized.expression)]
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+#1. Tagging targets with M1 and M2
+DT_m1m2 <- DT_m1m2[,m1m2:=ifelse(target %in% c("CD16", "CD32"), "m1", "m2")]
+#2. Calculating mean normalized expression for each animal, cell type (MG/MONO) and polarization (M1, M2)
+DT_m1m2_aggregated <- unique(DT_m1m2[,.(mean(normalized.expression), Group), by=c("RH.index", "cell.type", "m1m2")])
+#3. Switching to wide format
+DT_m1m2_aggregated <- dcast(DT_m1m2_aggregated, ...~m1m2, value.var = "V1")
+#4. Calculating m1/m2 ratio 
+DT_m1m2_aggregated <- DT_m1m2_aggregated[ ,m1.m2.ratio:=m1/m2]
+#5. Calculating summary data
+DT_m1m2_summary <- DT_m1m2_aggregated[m1.m2.ratio<2.5,.(m1.m2.ratio.mean = mean(m1.m2.ratio), m1.m2.ratio.sd =sd(m1.m2.ratio), N=.N), by=c("cell.type", "Group")][,SEMx1.96:=qnorm(0.90)*m1.m2.ratio.sd/sqrt(N)][,`:=`(CI.lower=m1.m2.ratio.mean-SEMx1.96, CI.upper=m1.m2.ratio.mean+SEMx1.96)]
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+#1. Plotting M1/M2 ratio 
+m1_m1_plot_function <- function(dataset, cell_type, ylabel, legend.option){
+  dataset <- dataset[cell.type %in% cell_type]
+  
+  m1_m1_plot_out <- ggplot(dataset, aes(x=Group, y=m1.m2.ratio.mean, fill=Group, alpha=cell.type))+
+    geom_bar(stat="identity", width=0.5, show.legend = T, position = position_dodge(width = 0.5))+
+    geom_errorbar(aes(ymin=CI.lower, ymax=CI.upper), width=0.25, size=1.5, position = position_dodge(width = 0.5), show.legend = F)+
+    geom_point(DT_m1m2_aggregated[cell.type %in% cell_type & m1.m2.ratio<2.5], mapping=aes(x=Group, y=m1.m2.ratio, alpha=cell.type), show.legend = F, position = position_dodge(width=0.5))+
+    geom_point(shape=15, size=4, show.legend = F, position = position_dodge(width=0.5))+
+
+    ylab(ylabel)+
+    
+    scale_fill_manual(values=brewer.pal(11, "RdBu")[c(1,2,10,11)], labels=c("Allogenic IDmBMSC (n=3)", "Syngeneic IDmBMSC (n=3)", "Injury Control (n=3)", "No Injury (n=3)"))+
+    scale_alpha_manual(values=c(1,0.6), labels=c("Macrophages", "Monocytes"))+
+    scale_y_continuous(breaks=seq(0,3,0.25))+
+    theme(legend.position = legend.option, legend.title = element_blank(), legend.justification = "center", legend.text = element_text(size=15), axis.title.x = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.y = element_text(face="bold", size=22))
+  
+  return(m1_m1_plot_out)
+}
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+###Statistical analysis: Percentage sorted macrophages/monocytes
+#A. Normality cannot be evaluated with 3 observations: therefore assuming that data is not normally distributed
+
+#B. Evaluating homogenity of variances
+fligner_microglia_p <- fligner.test(DT_long[cell.type=="Microglia",Percentage], DT_long[cell.type=="Microglia",factor(Group)])$p.value
+fligner_monocyte_p <- fligner.test(DT_long[cell.type=="Monocytes",Percentage], DT_long[cell.type=="Monocytes",factor(Group)])$p.value
+
+#C. One-way ANOVA
+anova_microglia_p <- summary(aov(Percentage~Group, DT_long[cell.type=="Microglia"]))[[1]]$`Pr(>F)`[1]
+anova_monocytes_p <- summary(aov(Percentage~Group, DT_long[cell.type=="Monocytes"]))[[1]]$`Pr(>F)`[1]
+
+#D. Pair-wise Mann Whitney U tests
+tukeys_microglia_p <-TukeyHSD(aov(Percentage ~ Group, data=DT_long[cell.type=="Microglia"]))[[1]][,4]
+tukeys_monocytes_p <-TukeyHSD(aov(Percentage ~ Group, data=DT_long[cell.type=="Monocytes"]))[[1]][,4]
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+###Statistical analysis: M1/M2 ratio
+#A. Normality cannot be evaluated with 3 observations: therefore assuming that data is not normally distributed
+
+#B. Evaluating homogenity of variances
+fligner_microglia_p_m1m2 <- fligner.test(DT_m1m2_aggregated[cell.type=="MG",m1.m2.ratio], DT_m1m2_aggregated[cell.type=="MG",factor(Group)])$p.value
+fligner_monocyte_p_m1m2 <- fligner.test(DT_m1m2_aggregated[cell.type=="MONO",m1.m2.ratio], DT_m1m2_aggregated[cell.type=="MONO",factor(Group)])$p.value
+
+#C. One-way ANOVA
+anova_microglia_p_m1m2 <- summary(aov(m1.m2.ratio~Group, DT_m1m2_aggregated[cell.type=="MG" & m1.m2.ratio<2.5]))[[1]]$`Pr(>F)`[1]
+anova_monocytes_p_m1m2 <- summary(aov(m1.m2.ratio~Group, DT_m1m2_aggregated[cell.type=="MONO" & m1.m2.ratio<2.5]))[[1]]$`Pr(>F)`[1]
+
+#D. Pair-wise Mann Whitney U tests
+tukeys_microglia_p_m1m2 <-TukeyHSD(aov(m1.m2.ratio ~ Group, data=DT_m1m2_aggregated[cell.type=="MG" & m1.m2.ratio<2.5]))[[1]][,4]
+tukeys_monocytes_p_m1m2 <-TukeyHSD(aov(m1.m2.ratio ~ Group, data=DT_m1m2_aggregated[cell.type=="MONO" & m1.m2.ratio<2.5]))[[1]][,4]
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+###################################################################### OUTPUT ####################################################
+```
+
+```{r echo=F, message=F, warning=F, error=F}
+# #1. ANOVA table
+# anova_table <- data.table(cbind(anova_microglia_p_m1m2, anova_monocytes_p_m1m2, anova_microglia_p, anova_monocytes_p))
+# anova_table <- round(anova_table,3)
+# fwrite(anova_table, "anova_table.csv", sep=";")
+
+# #2. Exporting p-values for post hoc test M1/M2
+# post_hoc_table_m1m2 <- data.table(format(t(tukeys_microglia_p_m1m2), scientific = T, digits=2))
+# names(post_hoc_table_m1m2) <- c("Syngeneic-Allogenic", "Injury-Allogenic", "No-injury-Allogenic", "Injury-Syngeneic", "No-injury-Syngeneic", "No-injury-Injury")
+# fwrite(post_hoc_table_m1m2, "post_hoc_table_m1m2.csv", sep=";")
+# 
+# #3. Exporting p-values for post hoc test percentage gated cells
+# post_hoc_table <- data.table(format(t(tukeys_microglia_p), scientific = T, digits=2))
+# names(post_hoc_table) <- c("Syngeneic-Allogenic", "Injury-Allogenic", "No-injury-Allogenic", "Injury-Syngeneic", "No-injury-Syngeneic", "No-injury-Injury")
+# fwrite(post_hoc_table, "post_hoc_table.csv", sep=";")
+
+# #3. Saving M1/M2 & balance plot
+# #1. Retrieving legend for plots
+# joint_legend <- get_legend(m1_m1_plot_function(DT_m1m2_summary, c("MG", "MONO"), "M1/M2 ratio", "bottom"))
+# # 2. Arranging graphical objects
+# g <- arrangeGrob(arrangeGrob(arrangeGrob(m1_m1_plot_function(DT_m1m2_summary, c("MG", "MONO"), "M1/M2 ratio", "none"), left=textGrob("B", gp=gpar(fontsize=17, fontface="bold"), vjust=-16)), arrangeGrob(monocyte_microglia_ratio_plot, left=textGrob("C", gp=gpar(fontsize=17, fontface="bold"), vjust=-16)), ncol=2), joint_legend, nrow=2, ncol=1, heights = c(1,0.1))
+# #3. Saving output
+# ggsave("m1m2_balance_plot.jpg", g, width=14, height=7, dpi=1000)
+
+# #4. Exporting descriptive table
+# descriptive_table <- DT_m1m2_summary[order(cell.type, Group)][,!c("m1.m2.ratio.sd", "N", "SEMx1.96")]
+# descriptive_table <- data.table(descriptive_table[,1:2], round(descriptive_table[,3:5],2))
+# 
+# fwrite(descriptive_table, "descriptive_table.csv", sep=";")
+
+# #5. Saving m1-m2 plot separately for poster
+# ggsave("m1_m2_plot.jpg",m1_m1_plot_function(DT_m1m2_summary, c("MG", "MONO"), "M1/M2 ratio", "bottom"), width=14, height=7, dpi=1000)
+
+```
